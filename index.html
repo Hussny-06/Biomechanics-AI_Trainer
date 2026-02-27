@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Biomechanics Engine</title>
+    <style>
+        :root {
+            --bg-dark: #121212;
+            --bg-panel: #1e1e1e;
+            --accent-cyan: #00e5ff;
+            --text-main: #ffffff;
+            --text-muted: #aaaaaa;
+        }
+        body {
+            margin: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+        }
+        .container {
+            background-color: var(--bg-panel);
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+            width: 90%;
+            max-width: 500px;
+            text-align: center;
+        }
+        h1 {
+            color: var(--accent-cyan);
+            margin-bottom: 0.5rem;
+        }
+        .form-group {
+            margin-bottom: 1.5rem;
+            text-align: left;
+        }
+        label {
+            display: block;
+            margin-bottom: 0.5rem;
+            color: var(--text-muted);
+        }
+        input, select {
+            width: 100%;
+            padding: 0.8rem;
+            border: 1px solid #333;
+            border-radius: 6px;
+            background-color: #2a2a2a;
+            color: white;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: var(--accent-cyan);
+            color: black;
+            border: none;
+            padding: 1rem 2rem;
+            font-size: 1.1rem;
+            font-weight: bold;
+            border-radius: 6px;
+            cursor: pointer;
+            width: 100%;
+            transition: all 0.3s ease;
+        }
+        button:hover {
+            box-shadow: 0 0 15px var(--accent-cyan);
+        }
+        #plan-screen {
+            display: none;
+        }
+        .card {
+            background: #2a2a2a;
+            padding: 1rem;
+            margin: 1rem 0;
+            border-left: 4px solid var(--accent-cyan);
+            border-radius: 4px;
+        }
+        #video-container {
+            margin-top: 2rem;
+            border: 2px solid var(--accent-cyan);
+            border-radius: 8px;
+            overflow: hidden;
+            display: none;
+        }
+        img {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="setup-screen" class="container">
+        <h1>AI Biomechanics Engine</h1>
+        <p style="color: var(--text-muted); margin-bottom: 2rem;">Configure your local training parameters.</p>
+        
+        <div class="form-group">
+            <label>Athlete Name</label>
+            <input type="text" id="userName" placeholder="Enter your name">
+        </div>
+        
+        <div class="form-group">
+            <label>Primary Goal</label>
+            <select id="userGoal">
+                <option value="Hypertrophy">Hypertrophy (Muscle Growth)</option>
+                <option value="Endurance">Muscular Endurance</option>
+                <option value="Strength">Raw Strength</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label>Experience Level</label>
+            <select id="userLevel">
+                <option value="Beginner">Beginner</option>
+                <option value="Intermediate">Intermediate</option>
+                <option value="Advanced">Advanced</option>
+            </select>
+        </div>
+
+        <button onclick="generatePlan()">Generate AI Plan</button>
+    </div>
+
+    <div id="plan-screen" class="container" style="max-width: 800px;">
+        <h1 id="welcome-text">Athlete Protocol</h1>
+        
+        <div id="routine-cards">
+            </div>
+
+        <button id="start-btn" onclick="startCamera()" style="display: none; margin-top: 1rem;">Initialize Perception Engine</button>
+
+        <div id="video-container">
+            <img id="video-feed" src="" alt="Live Biomechanic Feed">
+        </div>
+    </div>
+
+    <script>
+        // Toggles visibility between the form and the camera screens
+        function showScreen(screenId) {
+            document.getElementById('setup-screen').style.display = 'none';
+            document.getElementById('plan-screen').style.display = 'none';
+            document.getElementById(screenId).style.display = 'block';
+        }
+
+        // The bridge that asks Python to ask Llama 3
+        async function generatePlan() {
+            const name = document.getElementById('userName').value || "Athlete";
+            const goal = document.getElementById('userGoal').value;
+            const level = document.getElementById('userLevel').value;
+            
+            document.getElementById('welcome-text').innerText = "Protocol for " + name;
+            
+            showScreen('plan-screen');
+            document.getElementById('routine-cards').innerHTML = '<h2 style="color:#888;">Consulting Llama 3 AI Core...</h2>';
+            document.getElementById('start-btn').style.display = 'none';
+
+            try {
+                // Calls the FastAPI endpoint we built
+                const response = await fetch('/api/generate_plan', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: name, goal: goal, level: level })
+                });
+                
+                const planData = await response.json();
+                
+                const cardsContainer = document.getElementById('routine-cards');
+                cardsContainer.innerHTML = '';
+                
+                // Dynamically build the UI based on Llama 3's JSON logic
+                planData.routine.forEach(item => {
+                    cardsContainer.innerHTML += `
+                        <div class="card">
+                            <h2>${item.exercise}</h2>
+                            <h3>${item.reps} Reps</h3>
+                        </div>
+                    `;
+                });
+                
+                document.getElementById('start-btn').style.display = 'block';
+                
+            } catch (error) {
+                document.getElementById('routine-cards').innerHTML = '<h2 style="color:#ff5555;">Error connecting to AI. Check server logs.</h2>';
+                console.error("Error:", error);
+            }
+        }
+
+        // Activates the OpenCV/MediaPipe stream
+        function startCamera() {
+            document.getElementById('video-container').style.display = 'block';
+            document.getElementById('video-feed').src = "/video_feed";
+            document.getElementById('start-btn').style.display = 'none';
+        }
+    </script>
+</body>
+</html>
