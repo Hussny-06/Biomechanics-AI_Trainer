@@ -47,22 +47,36 @@ def generate_frames():
             
             try:
                 landmarks = results.pose_landmarks.landmark
+                
+                # 1. Get Coordinates
                 shoulder = [landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].x,landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].y]
                 elbow = [landmarks[mp_pose.PoseLandmark.LEFT_ELBOW.value].x,landmarks[mp_pose.PoseLandmark.LEFT_ELBOW.value].y]
                 wrist = [landmarks[mp_pose.PoseLandmark.LEFT_WRIST.value].x,landmarks[mp_pose.PoseLandmark.LEFT_WRIST.value].y]
                 
-                angle = calculate_angle(shoulder, elbow, wrist)
+                # 2. Get Visibility (Confidence Scores from 0.0 to 1.0)
+                shoulder_vis = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].visibility
+                elbow_vis = landmarks[mp_pose.PoseLandmark.LEFT_ELBOW.value].visibility
+                wrist_vis = landmarks[mp_pose.PoseLandmark.LEFT_WRIST.value].visibility
                 
-                cv2.putText(image, str(int(angle)), 
-                               tuple(np.multiply(elbow, [640, 480]).astype(int)), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2, cv2.LINE_AA)
-                
-                # Finite State Machine Logic
-                if angle > 160:
-                    stage = "down"
-                if angle < 30 and stage =='down':
-                    stage="up"
-                    counter +=1
+                # 3. THE CONFIDENCE GATEKEEPER
+                # Only calculate math if the AI is >50% sure it sees the arm
+                if shoulder_vis > 0.5 and elbow_vis > 0.5 and wrist_vis > 0.5:
+                    angle = calculate_angle(shoulder, elbow, wrist)
+                    
+                    cv2.putText(image, str(int(angle)), 
+                                   tuple(np.multiply(elbow, [640, 480]).astype(int)), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2, cv2.LINE_AA)
+                    
+                    # Finite State Machine Logic
+                    if angle > 160:
+                        stage = "down"
+                    if angle < 30 and stage =='down':
+                        stage="up"
+                        counter +=1
+                else:
+                    # Warning if user steps out of frame
+                    cv2.putText(image, 'ALIGN FULL ARM IN FRAME', (100, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2, cv2.LINE_AA)
+                    
             except:
                 pass
             
