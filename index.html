@@ -71,7 +71,40 @@
         }
         #plan-screen {
             display: none;
+            width: 95%; 
+            max-width: 1400px; 
+            background: transparent; 
+            box-shadow: none;
+            padding: 0;
         }
+        
+        /* The new Side-by-Side Layout */
+        .dashboard-layout {
+            display: flex;
+            gap: 2rem;
+            align-items: flex-start;
+        }
+        
+        .sidebar {
+            flex: 1; 
+            background-color: var(--bg-panel);
+            padding: 1.5rem;
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+            min-width: 250px;
+        }
+        
+        .main-view {
+            flex: 2.5; 
+            background-color: var(--bg-panel);
+            padding: 1.5rem;
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
         .card {
             background: #2a2a2a;
             padding: 1rem;
@@ -79,12 +112,14 @@
             border-left: 4px solid var(--accent-cyan);
             border-radius: 4px;
         }
+
         #video-container {
-            margin-top: 2rem;
+            width: 100%;
             border: 2px solid var(--accent-cyan);
             border-radius: 8px;
             overflow: hidden;
             display: none;
+            margin-top: 1rem;
         }
         img {
             width: 100%;
@@ -125,28 +160,42 @@
         <button onclick="generatePlan()">Generate AI Plan</button>
     </div>
 
-    <div id="plan-screen" class="container" style="max-width: 800px;">
-        <h1 id="welcome-text">Athlete Protocol</h1>
-        
-        <div id="routine-cards">
+    <div id="plan-screen">
+        <div class="dashboard-layout">
+            
+            <div class="sidebar">
+                <h2 id="welcome-text" style="color: var(--accent-cyan); margin-top: 0;">Protocol</h2>
+                <hr style="border-color: #333; margin-bottom: 1rem;">
+                <div id="routine-cards"></div>
+                <div id="live-telemetry" class="card" style="border-left-color: #ff00ff; display: none; margin-top: 2rem;">
+                    <h3 style="color: #ff00ff; margin-top: 0; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 2px;">Live Telemetry</h3>
+                    <h1 style="font-size: 3.5rem; margin: 0.5rem 0;">
+                        <span id="tel-reps" style="color: white;">0</span> 
+                        <span style="font-size: 1.2rem; color: #888;">REPS</span>
+                    </h1>
+                    <h2 id="tel-state" style="color: var(--accent-cyan); margin: 0; font-family: monospace;">IDLE</h2>
+                </div>
             </div>
 
-        <button id="start-btn" onclick="startCamera()" style="display: none; margin-top: 1rem;">Initialize Perception Engine</button>
-
-        <div id="video-container">
-            <img id="video-feed" src="" alt="Live Biomechanic Feed">
+            <div class="main-view">
+                <h2 style="margin-top: 0; color: white;">Live Perception Engine</h2>
+                <button id="start-btn" onclick="startCamera()">Initialize Camera Feed</button>
+                
+                <div id="video-container">
+                    <img id="video-feed" src="" alt="Live Biomechanic Feed">
+                </div>
+            </div>
+            
         </div>
     </div>
 
     <script>
-        // Toggles visibility between the form and the camera screens
         function showScreen(screenId) {
             document.getElementById('setup-screen').style.display = 'none';
             document.getElementById('plan-screen').style.display = 'none';
             document.getElementById(screenId).style.display = 'block';
         }
 
-        // The bridge that asks Python to ask Llama 3
         async function generatePlan() {
             const name = document.getElementById('userName').value || "Athlete";
             const goal = document.getElementById('userGoal').value;
@@ -159,7 +208,6 @@
             document.getElementById('start-btn').style.display = 'none';
 
             try {
-                // Calls the FastAPI endpoint we built
                 const response = await fetch('/api/generate_plan', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -171,7 +219,6 @@
                 const cardsContainer = document.getElementById('routine-cards');
                 cardsContainer.innerHTML = '';
                 
-                // Dynamically build the UI based on Llama 3's JSON logic
                 planData.routine.forEach(item => {
                     cardsContainer.innerHTML += `
                         <div class="card">
@@ -189,11 +236,35 @@
             }
         }
 
-        // Activates the OpenCV/MediaPipe stream
-        function startCamera() {
+       function startCamera() {
+            // 1. Show the video and the new telemetry card
             document.getElementById('video-container').style.display = 'block';
+            document.getElementById('live-telemetry').style.display = 'block';
             document.getElementById('video-feed').src = "/video_feed";
             document.getElementById('start-btn').style.display = 'none';
+
+            // 2. Start the Telemetry Data Bridge (Polls every 200ms)
+            setInterval(async () => {
+                try {
+                    const res = await fetch('/telemetry');
+                    const data = await res.json();
+                    
+                    // Update the HTML with the live Python data
+                    document.getElementById('tel-reps').innerText = data.reps;
+                    document.getElementById('tel-state').innerText = data.state;
+                    
+                    // Optional Gamification: Flash the box green on the Concentric phase
+                    if (data.state === "CONCENTRIC") {
+                        document.getElementById('live-telemetry').style.boxShadow = "0 0 20px #00ff00";
+                        document.getElementById('live-telemetry').style.borderLeftColor = "#00ff00";
+                    } else {
+                        document.getElementById('live-telemetry').style.boxShadow = "none";
+                        document.getElementById('live-telemetry').style.borderLeftColor = "#ff00ff";
+                    }
+                } catch (err) {
+                    console.error("Telemetry bridge disconnected");
+                }
+            }, 200);
         }
     </script>
 </body>
