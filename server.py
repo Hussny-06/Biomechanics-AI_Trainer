@@ -117,6 +117,7 @@ def generate_frames():
             ret, buffer = cv2.imencode('.jpg', frame)
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+        
         print("[SYSTEM] Starting pose detection.")
             
         with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as pose:
@@ -289,6 +290,40 @@ def generate_frames():
         cap.release()
         active_cap = None
         print("[SYSTEM] Camera released.")
+
+# --- 2. FASTAPI ENDPOINTS ---
+
+def preview_frames():
+    global active_cap
+    if active_cap is not None:
+        active_cap.release()
+        import time
+        time.sleep(0.5)
+        
+    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+    active_cap = cap
+    if not cap.isOpened():
+        return
+        
+    try:
+        while True:
+            success, frame = cap.read()
+            if not success:
+                break
+                
+            # Add preview overlay
+            cv2.putText(frame, "PREVIEW MODE - POSITION YOURSELF", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 229, 255), 2, cv2.LINE_AA)
+            
+            ret, buffer = cv2.imencode('.jpg', frame)
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+    finally:
+        cap.release()
+        active_cap = None
+
+@app.get("/preview_feed")
+def preview_feed():
+    return StreamingResponse(preview_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
 # --- 2. FASTAPI ENDPOINTS ---
 
 @app.get("/")
@@ -304,50 +339,3 @@ def video_feed():
 @app.get("/telemetry")
 def get_telemetry():
     return telemetry_data
-
-# --- 3. THE GENERATIVE AI LAYER (Ollama Bridge) ---
-
-class UserProfile(BaseModel):
-    name: str
-    goal: str
-    level: str
-
-@app.post("/api/generate_plan")
-def generate_plan(profile: UserProfile):
-    prompt = f"""
-    You are an expert AI fitness coach. Create a workout plan for {profile.name}, a {profile.level} whose goal is {profile.goal}. 
-    Return ONLY a valid JSON object with a 'routine' array. 
-    We currently only support two exercises: 'Bicep Curls' and 'Squats'.
-    Calculate scientifically accurate rep targets based on their level and goal.
-    Format exactly like this:
-    {{
-        "routine": [
-            {{"exercise": "Bicep Curls", "reps": 12}},
-            {{"exercise": "Squats", "reps": 15}}
-        ]
-    }}
-    """
-    
-    payload = {
-        "model": "llama3",
-        "prompt": prompt,
-        "stream": False,
-        "format": "json" # Forces clean JSON output
-    }
-    
-    try:
-        # Talks to WSL Linux on port 11434
-        response = requests.post("http://localhost:11434/api/generate", json=payload)
-        data = response.json()
-        ai_json = json.loads(data["response"])
-        return ai_json
-        
-    except Exception as e:
-        print(f"Ollama Error: {e}")
-        # Fallback if Linux isn't running
-        return {
-            "routine": [
-                {"exercise": "Bicep Curls", "reps": 10},
-                {"exercise": "Squats", "reps": 10}
-            ]
-        }
