@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import cv2
 import mediapipe as mp
@@ -7,8 +8,14 @@ import numpy as np
 import os
 import requests
 import json
+from datetime import datetime
+
+from database import SessionLocal, User, WorkoutSession, WorkoutSet
 
 app = FastAPI()
+
+# Serve static files (Chart.js bundle)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # --- 1. BIOMECHANICS ENGINE (MediaPipe) ---
 mp_drawing = mp.solutions.drawing_utils
@@ -27,11 +34,22 @@ def calculate_angle(a, b, c):
         
     return angle
 
+# --- GLOBAL STATE & TELEMETRY ---
 counter = 0 
 stage = None
-
-# --- GLOBAL TELEMETRY STATE ---
 telemetry_data = {"reps": 0, "state": "IDLE"}
+
+# --- CENTROID LOCK VARIABLES ---
+anchor_centroid = None  # Stores the (x, y) of the primary user
+LOCK_RADIUS = 0.25      # 25% of the screen width - The "Safety Bubble"
+
+# --- DATABASE SESSION TRACKING ---
+current_session_id = None  # Set when a plan is generated
+current_user_name = None   # Set when a plan is generated
+current_exercise = "Bicep Curls"  # Active exercise for FSM joint selection
+
+# --- CAMERA RESOURCE MANAGEMENT ---
+active_cap = None  # Track the active VideoCapture to prevent resource leaks
 
 def generate_frames():
     global counter, stage
