@@ -324,12 +324,11 @@ def preview_frames():
 @app.get("/preview_feed")
 def preview_feed():
     return StreamingResponse(preview_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
-# --- 2. FASTAPI ENDPOINTS ---
 
 @app.get("/")
 def home():
     html_path = os.path.join(os.path.dirname(__file__), "index.html")
-    with open(html_path, "r") as f:
+    with open(html_path, "r", encoding="utf-8") as f:
         return HTMLResponse(content=f.read(), status_code=200)
 
 @app.get("/video_feed")
@@ -339,3 +338,124 @@ def video_feed():
 @app.get("/telemetry")
 def get_telemetry():
     return telemetry_data
+
+@app.get("/api/users")
+def get_users():
+    """Returns all registered users with their session counts."""
+    db = SessionLocal()
+    try:
+        users = db.query(User).all()
+        result = []
+        for u in users:
+            session_count = db.query(WorkoutSession).filter(WorkoutSession.user_id == u.id).count()
+            total_sets = db.query(WorkoutSet).join(WorkoutSession).filter(WorkoutSession.user_id == u.id).count()
+            result.append({
+                "name": u.name,
+                "goal": u.goal,
+                "level": u.level,
+                "sessions": session_count,
+                "total_sets": total_sets
+            })
+        return {"users": result}
+    finally:
+        db.close()
+
+class ExerciseData(BaseModel):
+    exercise: str = "Bicep Curls"
+
+@app.post("/set_exercise")
+def set_exercise(data: ExerciseData):
+    global current_exercise
+    current_exercise = data.exercise
+    print(f"[FSM] Exercise switched to: {current_exercise}")
+    return {"exercise": current_exercise}
+
+class ResetData(BaseModel):
+    exercise: str = "Unknown"
+    target_reps: int = 0
+    next_exercise: str = ""
+
+@app.post("/reset_fsm")
+def reset_fsm(data: ResetData):
+    global counter, stage, telemetry_data, anchor_centroid, current_session_id, current_exercise
+    
+    # --- PERSIST THE COMPLETED SET TO DATABASE ---
+    if current_session_id and counter > 0:
+        db = SessionLocal()
+        try:
+            new_set = WorkoutSet(
+                session_id=current_session_id,
+                exercise=data.exercise,
+                target_reps=data.target_reps,
+                completed_reps=counter,
+                completed_at=datetime.utcnow()
+            )
+            db.add(new_set)
+            db.commit()
+            print(f"[DB] Saved: {data.exercise} -> {counter}/{data.target_reps} reps")
+        except Exception as e:
+            print(f"[DB ERROR] Failed to save set: {e}")
+            db.rollback()
+        finally:
+            db.close()
+    
+    # --- RESET FSM STATE ---
+    saved_reps = counter
+    counter = 0
+    stage = "IDLE"
+    telemetry_data["reps"] = 0
+    telemetry_data["state"] = "IDLE"
+    anchor_centroid = None  # Releases the lock for the next set/user
+    
+    # Switch to next exercise if provided
+    if data.next_exercise:
+        current_exercise = data.next_exercise
+        print(f"[FSM] Switched to: {current_exercise}")
+    
+    return {"message": "FSM Reset Successful", "saved_reps": saved_reps}
+# --- 3. THE GENERATIVE AI LAYER (Ollama Bridge) ---
+
+class UserProfile(BaseModel):
+    name: str
+    goal: str
+    level: str
+
+@app.post("/api/generate_plan")
+def generate_plan(profile: UserProfile):
+    prompt = f"""
+    You are an expert AI fitness coach. Create a workout plan for {profile.name}, a {profile.level} whose goal is {profile.goal}. 
+    Return ONLY a valid JSON object with a 'routine' array. 
+    We currently only support two exercises: 'Bicep Curls' and 'Squats'.
+    Calculate scientifically accurate rep targets based on their level and goal.
+    Format exactly like this:
+    {{
+        "routine": [
+            {{"exercise": "Bicep Curls", "reps": 12}},
+            {{"exercise": "Squats", "reps": 15}}
+        ]
+    }}
+    """
+    
+    payload = {
+        "model": "llama3",
+        "prompt": prompt,
+        "stream": False,
+        "format": "json" # Forces clean JSON output
+    }
+    
+    try:
+        # Talks to WSL Linux on port 11434
+        response = requests.post("http://localhost:11434/api/generate", json=payload)
+        data = response.json()
+        ai_json = json.loads(data["response"])
+        return ai_json
+        
+    except Exception as e:
+        print(f"Ollama Error: {e}")
+        # Fallback if Linux isn't running
+        return {
+            "routine": [
+                {"exercise": "Bicep Curls", "reps": 10},
+                {"exercise": "Squats", "reps": 10}
+            ]
+        }
