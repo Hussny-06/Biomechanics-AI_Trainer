@@ -426,11 +426,11 @@
 
         async function generatePlan() {
             const name = document.getElementById('userName').value || "Athlete";
+            currentUserName = name;
             const goal = document.getElementById('userGoal').value;
             const level = document.getElementById('userLevel').value;
             
             document.getElementById('welcome-text').innerText = "Protocol for " + name;
-            
             showScreen('plan-screen');
             document.getElementById('routine-cards').innerHTML = '<h2 style="color:#888;">Consulting Llama 3 AI Core...</h2>';
             document.getElementById('start-btn').style.display = 'none';
@@ -444,44 +444,78 @@
                 
                 const planData = await response.json();
                 
+                // Store the full routine queue
+                routineQueue = [...planData.routine];
+                
+                // Load the first exercise
+                currentTarget = routineQueue[0].reps;
+                currentExerciseName = routineQueue[0].exercise;
+                
                 const cardsContainer = document.getElementById('routine-cards');
                 cardsContainer.innerHTML = '';
                 
-                planData.routine.forEach(item => {
+                planData.routine.forEach((item, index) => {
                     cardsContainer.innerHTML += `
-                        <div class="card">
+                        <div class="card" id="exercise-card-${index}">
                             <h2>${item.exercise}</h2>
                             <h3>${item.reps} Reps</h3>
                         </div>
                     `;
                 });
                 
+                // Highlight the first exercise
+                if (document.getElementById('exercise-card-0')) {
+                    document.getElementById('exercise-card-0').style.borderLeftColor = '#00ff00';
+                }
+                
                 document.getElementById('start-btn').style.display = 'block';
                 
+                // Show preview feed so user can position themselves
+                document.getElementById('video-container').style.display = 'block';
+                document.getElementById('video-feed').src = "/preview_feed";
+                
             } catch (error) {
-                document.getElementById('routine-cards').innerHTML = '<h2 style="color:#ff5555;">Error connecting to AI. Check server logs.</h2>';
                 console.error("Error:", error);
             }
         }
 
-       function startCamera() {
-            // 1. Show the video and the new telemetry card
+        async function startCamera() {
             document.getElementById('video-container').style.display = 'block';
             document.getElementById('live-telemetry').style.display = 'block';
-            document.getElementById('video-feed').src = "/video_feed";
             document.getElementById('start-btn').style.display = 'none';
+            
+            // Tell Python which exercise to track first
+            await fetch('/set_exercise', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ exercise: currentExerciseName })
+            });
+            
+            document.getElementById('video-feed').src = "/video_feed";
 
-            // 2. Start the Telemetry Data Bridge (Polls every 200ms)
+            // The Telemetry Bridge
             setInterval(async () => {
                 try {
                     const res = await fetch('/telemetry');
                     const data = await res.json();
                     
-                    // Update the HTML with the live Python data
                     document.getElementById('tel-reps').innerText = data.reps;
                     document.getElementById('tel-state').innerText = data.state;
                     
-                    // Optional Gamification: Flash the box green on the Concentric phase
+                    // --- TARGET ACHIEVED LOGIC ---
+                    if (data.reps >= currentTarget && currentTarget > 0) {
+                        document.getElementById('target-banner').style.display = 'block';
+                        if (routineQueue.length <= 1) {
+                            // Last exercise: allow training to failure with End Session button
+                            document.getElementById('next-btn').style.display = 'none';
+                            document.getElementById('end-btn').style.display = 'block';
+                        } else {
+                            document.getElementById('next-btn').style.display = 'block';
+                            document.getElementById('end-btn').style.display = 'none';
+                        }
+                    }
+                    
+                    // Gamification Flash
                     if (data.state === "CONCENTRIC") {
                         document.getElementById('live-telemetry').style.boxShadow = "0 0 20px #00ff00";
                         document.getElementById('live-telemetry').style.borderLeftColor = "#00ff00";
@@ -489,10 +523,88 @@
                         document.getElementById('live-telemetry').style.boxShadow = "none";
                         document.getElementById('live-telemetry').style.borderLeftColor = "#ff00ff";
                     }
-                } catch (err) {
-                    console.error("Telemetry bridge disconnected");
-                }
+                } catch (err) {}
             }, 200);
+        }
+
+        // --- RESET TRIGGER FOR NEXT EXERCISE ---
+        async function nextExercise() {
+            // Hide the banners
+            document.getElementById('target-banner').style.display = 'none';
+            document.getElementById('next-btn').style.display = 'none';
+            
+            // Advance to next exercise in the queue
+            routineQueue.shift();
+            
+            // Determine next exercise name for FSM switch
+            const nextEx = routineQueue.length > 0 ? routineQueue[0].exercise : "";
+            
+            // Tell Python to save the set and reset the FSM, switching to next exercise
+            await fetch('/reset_fsm', { 
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    exercise: currentExerciseName,
+                    target_reps: currentTarget,
+                    next_exercise: nextEx
+                })
+            });
+            
+            console.log(`[DB] Saved: ${currentExerciseName}`);
+            
+            if (routineQueue.length > 0) {
+                currentExerciseName = routineQueue[0].exercise;
+                currentTarget = routineQueue[0].reps;
+                
+                // Update card highlights
+                const allCards = document.querySelectorAll('[id^="exercise-card-"]');
+                allCards.forEach(card => card.style.borderLeftColor = 'var(--accent-cyan)');
+                const activeIndex = allCards.length - routineQueue.length;
+                if (document.getElementById(`exercise-card-${activeIndex}`)) {
+                    document.getElementById(`exercise-card-${activeIndex}`).style.borderLeftColor = '#00ff00';
+                }
+                
+                console.log(`Next: ${currentExerciseName} (${currentTarget} reps)`);
+            } else {
+                // All exercises complete!
+                currentTarget = 0;
+                currentExerciseName = "";
+                document.getElementById('target-banner').style.display = 'block';
+                document.getElementById('target-banner').innerText = '🏆 WORKOUT COMPLETE! All exercises finished.';
+                document.getElementById('target-banner').style.background = 'linear-gradient(90deg, #00e5ff, #ff00ff)';
+                console.log("Workout complete!");
+            }
+        }
+
+        // --- END SESSION AND AUTO-OPEN ANALYTICS ---
+        async function endSession() {
+            document.getElementById('target-banner').style.display = 'none';
+            document.getElementById('end-btn').style.display = 'none';
+            
+            // Save the final set and reset the FSM
+            await fetch('/reset_fsm', { 
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    exercise: currentExerciseName,
+                    target_reps: currentTarget,
+                    next_exercise: ""
+                })
+            });
+            
+            console.log(`[DB] Saved final exercise: ${currentExerciseName}`);
+            
+            // Close camera feed and telemetry
+            document.getElementById('video-container').style.display = 'none';
+            document.getElementById('live-telemetry').style.display = 'none';
+            document.getElementById('video-feed').src = "";
+            
+            currentTarget = 0;
+            currentExerciseName = "";
+            routineQueue = [];
+            
+            // Open Analytics
+            await openAnalytics();
         }
     </script>
 </body>
