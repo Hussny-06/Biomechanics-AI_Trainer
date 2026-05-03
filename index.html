@@ -279,11 +279,150 @@
     </div>
 
     <script>
+        let currentTarget = 0;
+        let currentExerciseName = "";
+        let routineQueue = [];
+        let repsChartInstance = null;
+        let targetChartInstance = null;
+
         function showScreen(screenId) {
+            document.getElementById('user-select-screen').style.display = 'none';
             document.getElementById('setup-screen').style.display = 'none';
             document.getElementById('plan-screen').style.display = 'none';
             document.getElementById(screenId).style.display = 'block';
         }
+
+        // --- PHASE 5: USER SELECTION ---
+        async function loadUserSelect() {
+            showScreen('user-select-screen');
+            try {
+                const res = await fetch('/api/users');
+                const data = await res.json();
+                const grid = document.getElementById('user-card-grid');
+                if (data.users.length === 0) {
+                    grid.innerHTML = '<p style="color:#888;">No athletes yet. Create your first profile.</p>';
+                    return;
+                }
+                grid.innerHTML = '';
+                data.users.forEach(u => {
+                    grid.innerHTML += `
+                        <div class="user-card">
+                            <div class="info" style="flex-grow: 1; cursor: pointer;" onclick="selectUser('${u.name}','${u.goal}','${u.level}')">
+                                <h3>${u.name}</h3>
+                                <p>${u.level} | ${u.goal}</p>
+                            </div>
+                            <div class="stats" style="margin-right: 1rem;">${u.sessions} sessions<br>${u.total_sets} sets</div>
+                            <button class="btn-secondary" style="margin: 0; padding: 0.4rem 0.8rem; font-size: 0.8rem; width: auto;" onclick="openAnalyticsFor('${u.name}')">History</button>
+                        </div>`;
+                });
+            } catch(e) { console.error(e); }
+        }
+
+        function selectUser(name, goal, level) {
+            document.getElementById('userName').value = name;
+            document.getElementById('userGoal').value = goal;
+            document.getElementById('userLevel').value = level;
+            showScreen('setup-screen');
+        }
+
+        function showNewUserForm() {
+            document.getElementById('userName').value = '';
+            showScreen('setup-screen');
+        }
+
+        // Load user selection on page load
+        loadUserSelect();
+
+        // --- PHASE 6: ANALYTICS ---
+        async function openAnalyticsFor(name) {
+            currentUserName = name;
+            document.getElementById('userName').value = name;
+            await openAnalytics();
+        }
+
+        function backToProfilesFromAnalytics() {
+            closeAnalytics();
+            loadUserSelect();
+        }
+
+        async function openAnalytics() {
+            const name = document.getElementById('userName').value || currentUserName || 'Athlete';
+            document.getElementById('analytics-modal').classList.add('active');
+            try {
+                const res = await fetch(`/api/history/${encodeURIComponent(name)}`);
+                const data = await res.json();
+                renderCharts(data);
+                renderSessionLog(data);
+            } catch(e) { console.error(e); }
+        }
+
+        function closeAnalytics() {
+            document.getElementById('analytics-modal').classList.remove('active');
+        }
+
+        function renderCharts(data) {
+            const allSets = [];
+            (data.sessions || []).forEach(s => { (s.sets || []).forEach(st => { allSets.push({...st, session_id: s.session_id}); }); });
+            if (allSets.length === 0) return;
+
+            // Reps over time chart
+            const labels = allSets.map((s,i) => `Set ${i+1}`);
+            const repsData = allSets.map(s => s.completed_reps);
+            const colors = allSets.map(s => s.exercise === 'Bicep Curls' ? '#00e5ff' : '#ff00ff');
+
+            if (repsChartInstance) repsChartInstance.destroy();
+            repsChartInstance = new Chart(document.getElementById('repsChart'), {
+                type: 'line',
+                data: { labels, datasets: [{ label: 'Completed Reps', data: repsData, borderColor: '#00e5ff', backgroundColor: 'rgba(0,229,255,0.1)', fill: true, tension: 0.3, pointBackgroundColor: colors, pointRadius: 5 }] },
+                options: { 
+                    responsive: true, 
+                    maintainAspectRatio: false, 
+                    plugins: { 
+                        legend: { display: false },
+                        tooltip: {
+                            displayColors: false,
+                            callbacks: {
+                                label: function(context) {
+                                    const ex = allSets[context.dataIndex].exercise;
+                                    return `${ex}: ${context.raw} reps`;
+                                }
+                            }
+                        }
+                    }, 
+                    scales: { 
+                        x: { ticks: { color: '#888' }, grid: { color: '#333' } }, 
+                        y: { ticks: { color: '#888' }, grid: { color: '#333' }, beginAtZero: true } 
+                    } 
+                }
+            });
+
+            // Target vs Completed chart
+            const targetData = allSets.map(s => s.target_reps);
+            const exLabels = allSets.map(s => s.exercise.split(' ')[0]);
+
+            if (targetChartInstance) targetChartInstance.destroy();
+            targetChartInstance = new Chart(document.getElementById('targetChart'), {
+                type: 'bar',
+                data: { labels: exLabels, datasets: [
+                    { label: 'Target', data: targetData, backgroundColor: 'rgba(255,0,255,0.4)', borderColor: '#ff00ff', borderWidth: 1 },
+                    { label: 'Completed', data: repsData, backgroundColor: 'rgba(0,229,255,0.4)', borderColor: '#00e5ff', borderWidth: 1 }
+                ] },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#aaa' } } }, scales: { x: { ticks: { color: '#888' }, grid: { color: '#333' } }, y: { ticks: { color: '#888' }, grid: { color: '#333' }, beginAtZero: true } } }
+            });
+        }
+
+        function renderSessionLog(data) {
+            const log = document.getElementById('session-log');
+            if (!data.sessions || data.sessions.length === 0) { log.innerHTML = '<p style="color:#888;">No session data yet.</p>'; return; }
+            log.innerHTML = '<h3 style="color:#ccc; text-transform:uppercase; letter-spacing:1px; font-size:0.9rem;">Session Log</h3>';
+            data.sessions.forEach(s => {
+                const date = s.started_at ? new Date(s.started_at).toLocaleString() : 'Unknown';
+                const setsHtml = (s.sets || []).map(st => `${st.exercise}: ${st.completed_reps}/${st.target_reps} reps`).join(' | ');
+                log.innerHTML += `<div class="log-entry"><h4>Session #${s.session_id} - ${date}</h4><p>${setsHtml || 'No sets recorded'}</p></div>`;
+            });
+        }
+
+        let currentUserName = '';
 
         async function generatePlan() {
             const name = document.getElementById('userName').value || "Athlete";
