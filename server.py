@@ -413,6 +413,7 @@ def reset_fsm(data: ResetData):
         print(f"[FSM] Switched to: {current_exercise}")
     
     return {"message": "FSM Reset Successful", "saved_reps": saved_reps}
+
 # --- 3. THE GENERATIVE AI LAYER (Ollama Bridge) ---
 
 class UserProfile(BaseModel):
@@ -422,6 +423,34 @@ class UserProfile(BaseModel):
 
 @app.post("/api/generate_plan")
 def generate_plan(profile: UserProfile):
+    global current_session_id, current_user_name
+    
+    # --- DATABASE: Create/lookup user and start session ---
+    db = SessionLocal()
+    try:
+        # Look up user by name, or create if new
+        user = db.query(User).filter(User.name == profile.name).first()
+        if not user:
+            user = User(name=profile.name, goal=profile.goal, level=profile.level)
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+            print(f"[DB] New user created: {profile.name}")
+        else:
+            # Update goal/level if they changed
+            user.goal = profile.goal
+            user.level = profile.level
+            db.commit()
+            print(f"[DB] Existing user found: {profile.name}")
+        
+        current_user_name = profile.name
+    except Exception as e:
+        print(f"[DB ERROR] User creation failed: {e}")
+        db.rollback()
+    finally:
+        db.close()
+    
+    # --- LLM: Generate the workout plan ---
     prompt = f"""
     You are an expert AI fitness coach. Create a workout plan for {profile.name}, a {profile.level} whose goal is {profile.goal}. 
     Return ONLY a valid JSON object with a 'routine' array. 
@@ -440,22 +469,77 @@ def generate_plan(profile: UserProfile):
         "model": "llama3",
         "prompt": prompt,
         "stream": False,
-        "format": "json" # Forces clean JSON output
+        "format": "json"  # Forces clean JSON output
     }
     
+    ai_json = None
     try:
         # Talks to WSL Linux on port 11434
         response = requests.post("http://localhost:11434/api/generate", json=payload)
         data = response.json()
         ai_json = json.loads(data["response"])
-        return ai_json
         
     except Exception as e:
         print(f"Ollama Error: {e}")
         # Fallback if Linux isn't running
-        return {
+        ai_json = {
             "routine": [
                 {"exercise": "Bicep Curls", "reps": 10},
                 {"exercise": "Squats", "reps": 10}
             ]
         }
+    
+    # --- DATABASE: Create session with the generated protocol ---
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.name == profile.name).first()
+        if user:
+            session = WorkoutSession(
+                user_id=user.id,
+                started_at=datetime.utcnow(),
+                protocol_json=json.dumps(ai_json)
+            )
+            db.add(session)
+            db.commit()
+            db.refresh(session)
+            current_session_id = session.id
+            print(f"[DB] Session #{session.id} created for {profile.name}")
+    except Exception as e:
+        print(f"[DB ERROR] Session creation failed: {e}")
+        db.rollback()
+    finally:
+        db.close()
+    
+    return ai_json
+
+
+# --- 4. HISTORY API (Phase 6 prep) ---
+
+@app.get("/api/history/{user_name}")
+def get_history(user_name: str):
+    """Returns all sessions and sets for a given user."""
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.name == user_name).first()
+        if not user:
+            return {"error": "User not found", "sessions": []}
+        
+        sessions = db.query(WorkoutSession).filter(WorkoutSession.user_id == user.id).all()
+        result = []
+        for s in sessions:
+            sets = db.query(WorkoutSet).filter(WorkoutSet.session_id == s.id).all()
+            result.append({
+                "session_id": s.id,
+                "started_at": s.started_at.isoformat() if s.started_at else None,
+                "protocol": json.loads(s.protocol_json) if s.protocol_json else None,
+                "sets": [{
+                    "exercise": st.exercise,
+                    "target_reps": st.target_reps,
+                    "completed_reps": st.completed_reps,
+                    "completed_at": st.completed_at.isoformat() if st.completed_at else None
+                } for st in sets]
+            })
+        
+        return {"user": user.name, "sessions": result}
+    finally:
+        db.close()
